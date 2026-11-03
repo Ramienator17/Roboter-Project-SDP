@@ -1,0 +1,65 @@
+#define LEFT_LIGHT IN_4
+#define MID_LIGHT IN_3
+#define RIGHT_LIGHT IN_1
+
+int left_dif = 0;
+int mid_dif = 0;
+int right_dif = 0;
+
+struct PID {
+    float prev_err;
+    float integral;
+    float dt;
+}
+
+#define KP 1.0
+#define KI 1.0
+#define KD 1.0
+
+int pid_ctrl(int sensor_a, int sensor_b, struct PID *p) {
+    int err = sensor_a - sensor_b;
+    p->integral = err * dt;
+    
+    return motor_speed;
+}
+
+int get_light(int port, int cal) {
+    return Sensor(port) - cal;
+}
+
+void calibrate() {
+    long end = CurrentTick() + 2000;
+    while (CurrentTick() < end) {
+        left_dif = Sensor(LEFT_LIGHT);
+        mid_dif = Sensor(MID_LIGHT);
+        right_dif = Sensor(RIGHT_LIGHT);
+        Wait(1);
+    }
+}
+
+task main() {
+    SetSensorLight(LEFT_LIGHT);
+    SetSensorLight(MID_LIGHT);
+    SetSensorLight(RIGHT_LIGHT);
+    // calibrate lights to relative 0
+    calibrate();
+
+    // ultra sound sensor
+    SetSensorLowspeed(IN_2);
+
+    while(true) {
+        ClearScreen();
+
+        TextOut(0, LCD_LINE1, "Left:");
+        NumOut(60, LCD_LINE1, get_light(LEFT_LIGHT, left_dif));
+        TextOut(0, LCD_LINE2, "Middle:");
+        NumOut(60, LCD_LINE2, get_light(MID_LIGHT, mid_dif));
+        TextOut(0, LCD_LINE3, "Right:");
+        NumOut(60, LCD_LINE3, get_light(RIGHT_LIGHT, right_dif));
+
+        TextOut(0, LCD_LINE4, "Distance:");
+        NumOut(60, LCD_LINE4, SensorUS(IN_2));
+        
+        Wait(SEC_1);
+    }
+}

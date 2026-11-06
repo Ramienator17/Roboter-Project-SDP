@@ -1,0 +1,9 @@
+task main() 
+{
+    OnFwdSync(OUT_BC, MOTOR_POWER, 0);
+    while (!ButtonPressed(BITCENTER, false))
+     {
+        wait(50);
+    }
+    OffEx(OUT_BC, RESET_NONE);
+}

@@ -1,3 +1,4 @@
+#define MOTOR_POWER 100
 task main() 
 {
     OnFwdSync(OUT_BC, MOTOR_POWER, 0);

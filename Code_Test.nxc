@@ -2,30 +2,40 @@
 #define MID_LIGHT IN_3
 #define RIGHT_LIGHT IN_1
 
-int left_dif = 0;
-int mid_dif = 0;
-int right_dif = 0;
+#define LEFT_MOTOR OUT_C
+#define RIGHT_MOTOR OUT_B
 
-struct PID {
-    float prev_err;
+#define KP 0.01
+#define KI 0.001
+#define KD 0.01
+
+struct Test {
+    float output;
+    int err;
     float integral;
-    float dt;
-}
+};
 
-#define KP 1.0
-#define KI 1.0
-#define KD 1.0
-
-int pid_ctrl(int sensor_a, int sensor_b, struct PID *p) {
-    int err = sensor_a - sensor_b;
-    p->integral = err * dt;
-    
-    return motor_speed;
+Test pid_ctrl(int sensor_a, int sensor_b, float prev_err, float integral, float dt) {
+    float err = sensor_a - sensor_b;
+    integral += err * dt;
+    float derivative = (dt > 0) ? ((err - prev_err) / dt) : 0;
+    float output = KP * err + KI * integral + KD * derivative;
+    Test o;
+    o.output = output;
+    o.err = err;
+    o.integral = integral;
+    return o;
 }
 
 int get_light(int port, int cal) {
     return Sensor(port) - cal;
 }
+
+int left_dif = 0;
+int mid_dif = 0;
+int right_dif = 0;
+
+int min(int a, int b) {return (a < b) ? a : b;}
 
 void calibrate() {
     long end = CurrentTick() + 2000;
@@ -47,8 +57,29 @@ task main() {
     // ultra sound sensor
     SetSensorLowspeed(IN_2);
 
+    float prev_error = 0.0;
+    float integral = 0.0;
+    long last_time = CurrentTick();
+    int base_speed = 10;
+
     while(true) {
         ClearScreen();
+        long current_time = CurrentTick();
+        float dt = current_time - last_time;
+        last_time = current_time; 
+
+        Test data = pid_ctrl(get_light(LEFT_LIGHT, left_dif), get_light(RIGHT_LIGHT, right_dif), prev_error, integral, dt);
+        
+        prev_error = data.err;
+        integral = data.integral;
+
+        OnRev(LEFT_MOTOR, min(base_speed - data.output, 0));
+        OnRev(RIGHT_MOTOR, min(base_speed + data.output, 0));
+
+        NumOut(60, LCD_LINE5, data.output);
+        NumOut(60, LCD_LINE6, integral);
+        NumOut(69, LCD_LINE7, prev_error);
+        NumOut(60, LCD_LINE8, dt);
 
         TextOut(0, LCD_LINE1, "Left:");
         NumOut(60, LCD_LINE1, get_light(LEFT_LIGHT, left_dif));
@@ -61,5 +92,7 @@ task main() {
         NumOut(60, LCD_LINE4, SensorUS(IN_2));
         
         Wait(SEC_1);
+
+
     }
 }

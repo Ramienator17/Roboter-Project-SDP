@@ -1,0 +1,153 @@
+// --- PORT-DEFINITIONEN ---
+#define LEFT_LIGHT  IN_4
+#define MID_LIGHT   IN_3
+#define RIGHT_LIGHT IN_1
+#define MOTORS      OUT_BC
+
+// --- GESCHWINDIGKEITEN & SCHWELLENWERTE ---
+#define BASE_SPEED  45    // Grundgeschwindigkeit (für graue Linien / Zick-Zack moderat halten)
+#define TURN_SPEED  40    // Drehgeschwindigkeit bei 90-Grad-Kurven
+#define LINE_THRESH -12   // Schwellenwert nach Kalibrierung: Weiß = ca. 0, Grau = ca. -15 bis -25
+
+// --- PID-REGLER KONSTANTEN ---
+// Tipp: Für schärfere Zick-Zack-Linien KP und KD leicht erhöhen
+#define KP 1.8            // Proportional (Reaktionsstärke auf aktuelle Abweichung)
+#define KI 0.02           // Integral (Ausgleich dauerhafter Abweichungen)
+#define KD 1.2            // Derivative (Dämpfung gegen Überschwingen bei Zick-Zack)
+
+// --- GLOBALE VARIABLEN ---
+int left_cal  = 0;
+int mid_cal   = 0;
+int right_cal = 0;
+
+struct PID {
+    float prev_err;
+    float integral;
+};
+
+// Hilfsfunktion: Gibt relativen Lichtwert zurück (Weiß = ~0, Grau = negativer Wert)
+int get_light(int port, int cal) {
+    return Sensor(port) - cal;
+}
+
+// Kalibriert alle 3 Sensoren beim Start auf den weißen Untergrund
+void calibrate() {
+    long end = CurrentTick() + 2000;
+    while (CurrentTick() < end) {
+        left_cal  = Sensor(LEFT_LIGHT);
+        mid_cal   = Sensor(MID_LIGHT);
+        right_cal = Sensor(RIGHT_LIGHT);
+        Wait(5);
+    }
+}
+
+// PID-Berechnung für sanfte Linien und Zick-Zack-Passagen
+int pid_ctrl(int left_val, int right_val, struct PID &p) {
+    // Fehler berechnen: Differenz zwischen linkem und rechtem Sensor
+    int err = left_val - right_val;
+    
+    // Integral aufsummieren und gegen Überlauf (Windup) begrenzen
+    p.integral += err;
+    if (p.integral > 500)  p.integral = 500;
+    if (p.integral < -500) p.integral = -500;
+    
+    // Ableitung (Änderungsrate des Fehlers)
+    int derivative = err - p.prev_err;
+    p.prev_err = err;
+    
+    // PID-Gesamtausgang berechnen
+    float turn = (KP * err) + (KI * p.integral) + (KD * derivative);
+    
+    // Lenkwert für OnFwdSync auf -100 bis +100 begrenzen
+    if (turn > 100)  turn = 100;
+    if (turn < -100) turn = -100;
+    
+    return turn;
+}
+
+task main() {
+    // Sensoren als aktive Lichtsensoren (rote LED) starten
+    SetSensorLight(LEFT_LIGHT);
+    SetSensorLight(MID_LIGHT);
+    SetSensorLight(RIGHT_LIGHT);
+    
+    // Kurzer Signalton: Kalibrierung startet (Roboter muss auf WEISS stehen)
+    PlayTone(440, 200);
+    TextOut(0, LCD_LINE2, "Kalibriere Weiss...");
+    calibrate();
+    
+    // Signalton: Kalibrierung beendet, Fahrt startet
+    PlayTone(880, 300);
+    ClearScreen();
+
+    struct PID pid_data;
+    pid_data.prev_err = 0;
+    pid_data.integral = 0;
+    
+    // Letzte bekannte Richtung merken (-1 = Links, 1 = Rechts) für Zick-Zack-Spitzen
+    int last_dir = 0;
+
+    // Läuft, bis der orange Knopf (BTNCENTER) am NXT gedrückt wird
+    while (!ButtonPressed(BTNCENTER, false)) {
+        int l = get_light(LEFT_LIGHT, left_cal);
+        int m = get_light(MID_LIGHT, mid_cal);
+        int r = get_light(RIGHT_LIGHT, right_cal);
+
+        // Richtung merken, falls einer der äußeren Sensoren die graue Linie berührt
+        if (l < LINE_THRESH) last_dir = -1;
+        if (r < LINE_THRESH) last_dir = 1;
+
+        // --- FALL 1: 90-GRAD-RECHTSKURVE ---
+        // Rechter Sensor sieht Grau, linker Sensor sieht noch Weiß
+        if (r < LINE_THRESH && l > LINE_THRESH) {
+            // Kurz vorfahren, damit die Radachse über dem Eckpunkt liegt
+            OnFwdSync(MOTORS, BASE_SPEED, 0);
+            Wait(140);
+            
+            // Auf der Stelle nach rechts drehen, bis der mittlere Sensor wieder Grau findet
+            OnFwdSync(MOTORS, TURN_SPEED, 100);
+            while (get_light(MID_LIGHT, mid_cal) > LINE_THRESH && !ButtonPressed(BTNCENTER, false)) {
+                Wait(5);
+            }
+            // PID-Speicher zurücksetzen, damit er nach der Ecke nicht ruckelt
+            pid_data.integral = 0;
+            pid_data.prev_err = 0;
+        }
+        
+        // --- FALL 2: 90-GRAD-LINKSKURVE ---
+        // Linker Sensor sieht Grau, rechter Sensor sieht noch Weiß
+        else if (l < LINE_THRESH && r > LINE_THRESH) {
+            OnFwdSync(MOTORS, BASE_SPEED, 0);
+            Wait(140);
+            
+            // Auf der Stelle nach links drehen, bis der mittlere Sensor wieder Grau findet
+            OnFwdSync(MOTORS, TURN_SPEED, -100);
+            while (get_light(MID_LIGHT, mid_cal) > LINE_THRESH && !ButtonPressed(BTNCENTER, false)) {
+                Wait(5);
+            }
+            pid_data.integral = 0;
+            pid_data.prev_err = 0;
+        }
+
+        // --- FALL 3: SPITZE EINES ZICK-ZACKS (Linie kurzzeitig komplett verloren) ---
+        // Alle 3 Sensoren sehen Weiß -> Roboter schwenkt in die letzte bekannte Richtung zurück
+        else if (l > LINE_THRESH && m > LINE_THRESH && r > LINE_THRESH) {
+            if (last_dir == -1) {
+                OnFwdSync(MOTORS, TURN_SPEED, -80);
+            } else {
+                OnFwdSync(MOTORS, TURN_SPEED, 80);
+            }
+        }
+
+        // --- FALL 4: NORMALE FAHRT & SANFTE ZICK-ZACK-PASSAGEN (PID-REGLER) ---
+        else {
+            int turn_pct = pid_ctrl(l, r, pid_data);
+            OnFwdSync(MOTORS, BASE_SPEED, turn_pct);
+        }
+
+        Wait(10);
+    }
+
+    // Stopp bei Knopfdruck
+    OffEx(MOTORS, RESET_NONE);
+}

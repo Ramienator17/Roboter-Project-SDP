@@ -1,33 +1,35 @@
-#define LEFT_LIGHT IN_4
-#define MID_LIGHT IN_3
-#define RIGHT_LIGHT IN_1
+#define LIGHT_LEFT IN_4
+#define LIGHT_MID IN_3
+#define LIGHT_RIGHT IN_1
 
-#define LEFT_MOTOR OUT_C
-#define RIGHT_MOTOR OUT_A
-#define BOTH_MOTOR OUT_AC
+#define MOTOR_LEFT OUT_C
+#define MOTOR_RIGHT OUT_A
+#define MOTOR_MID OUT_B
+#define MOTOR_BOTH OUT_AC
 
-#define KP 100
-#define KI 0.001
-#define KD 100
+// constants for PID controller
+#define KP 10
+#define KI 0.01
+#define KD 10
 
-struct Test {
+struct PID {
+    int last_err;
     float output;
-    int err;
     float integral;
 };
 
-Test pid_ctrl(int sensor_a, int sensor_b, float prev_err, float integral, float dt) {
-    float err = sensor_a - sensor_b;
-    integral += err * dt;
-    float derivative = (dt > 0) ? ((err - prev_err) / dt) : 0;
-    float output = KP * err + KI * integral + KD * derivative;
+PID pid_ctrl(int sensor_a, int sensor_b, int dtime, PID pid) {
+    int current_err = sensor_a - sensor_b;
+    float integral = pid.integral + current_err * dtime;
+    float derivative = (dtime > 0) ? ((current_err - pid.last_err) / dtime) : 0;
+    float output = KP * current_err + KI * integral + KD * derivative;
     
-    Test o;
-    o.output = output;
-    o.err = err;
-    o.integral = integral;
-    
-    return o;
+    PID result;
+    result.last_err = current_err;
+    result.output = output;
+    result.integral = integral;
+
+    return result;
 }
 
 int get_light(int port, int cal) {
@@ -40,83 +42,76 @@ int get_light(int port, int cal) {
     return norm;
 }
 
-float norm(float num) {
-    const float min = 0;
-    const float max = 100;
-    return (num - min) * 100 / (max - min);
-}
-
 int left_dif = 0;
 int mid_dif = 0;
 int right_dif = 0;
 
-#define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-
-int no_neg(float val) {
-    return (val < 0) ? 0 : val;
-}
-
 void calibrate() {
-    long end = CurrentTick() + 2000;
+    long end = CurrentTick() + 1000;
     while (CurrentTick() < end) {
-        left_dif = Sensor(LEFT_LIGHT);
-        mid_dif = Sensor(MID_LIGHT);
-        right_dif = Sensor(RIGHT_LIGHT);
+        left_dif = Sensor(LIGHT_LEFT);
+        mid_dif = Sensor(LIGHT_MID);
+        right_dif = Sensor(LIGHT_RIGHT);
         Wait(1);
     }
 }
 
-void print_debug(int output, float integral, float prev_error, float dt) {
-        TextOut(0, LCD_LINE5, "Data.output:");
-        NumOut(60, LCD_LINE5, output);
-        TextOut(0, LCD_LINE6, "Integral");
-        NumOut(60, LCD_LINE6, integral);
-        TextOut(0, LCD_LINE7, "prev error");
-        NumOut(60, LCD_LINE7, prev_error);
-        TextOut(0, LCD_LINE8, "delta time");
-        NumOut(60, LCD_LINE8, dt);
+void print_debug(PID data, float dt) {
+    ClearScreen();
 
-        TextOut(0, LCD_LINE1, "Left:");
-        NumOut(60, LCD_LINE1, get_light(LEFT_LIGHT, left_dif));
-        TextOut(0, LCD_LINE2, "Middle:");
-        NumOut(60, LCD_LINE2, get_light(MID_LIGHT, mid_dif));
-        TextOut(0, LCD_LINE3, "Right:");
-        NumOut(60, LCD_LINE3, get_light(RIGHT_LIGHT, right_dif));
-        /*
-        TextOut(0, LCD_LINE4, "Distance:");
-        NumOut(60, LCD_LINE4, SensorUS(IN_2));
-        */
-    }
+    TextOut(0, LCD_LINE5, fmt("output: ", data.output));
+    //TextOut(0, LCD_LINE6, FormatNum("err: %d", data.last_err));
+    //TextOut(0, LCD_LINE7, FormatNum("integral: %f", data.integral));
+    Flatten(5); 
+
+    TextOut(0, LCD_LINE1, "Left:");
+    NumOut(60, LCD_LINE1, get_light(LIGHT_LEFT, left_dif));
+    TextOut(0, LCD_LINE2, "Middle:");
+    NumOut(60, LCD_LINE2, get_light(LIGHT_MID, mid_dif));
+    TextOut(0, LCD_LINE3, "Right:");
+    NumOut(60, LCD_LINE3, get_light(LIGHT_RIGHT, right_dif));
+    /*
+    TextOut(0, LCD_LINE4, "Distance:");
+    NumOut(60, LCD_LINE4, SensorUS(IN_2));
+    */
+}
+
+int clip(int val, int min, int max) {
+    if (val < min)
+        return min;
+    if (val > max)
+        return max;
+    return val;
+}
 
 task main() {
-    SetSensorLight(LEFT_LIGHT);
-    SetSensorLight(MID_LIGHT);
-    SetSensorLight(RIGHT_LIGHT);
-    // calibrate lights to relative 0
+    SetSensorLight(LIGHT_LEFT);
+    // SetSensorLight(LIGHT_MID);
+    SetSensorLight(LIGHT_RIGHT);
     calibrate();
-
     // ultra sound sensor
     SetSensorLowspeed(IN_2);
 
-    float prev_error = 0.0;
-    float integral = 0.0;
     long last_time = CurrentTick();
-    int base_speed = 60;
+    const int base_speed = 50;
+    
+    PID steering;
+    steering.output = 0;
+    steering.last_err = 0;
+    steering.integral = 0;
 
     while(true) {
-        ClearScreen();
         long current_time = CurrentTick();
-        float dt = current_time - last_time;
+        int dtime = current_time - last_time;
         last_time = current_time; 
 
-        Test data = pid_ctrl(get_light(LEFT_LIGHT, left_dif), get_light(RIGHT_LIGHT, right_dif), prev_error, integral, dt);
-        prev_error = data.err;
-        integral = data.integral;
+        steering = pid_ctrl(get_light(LIGHT_LEFT, left_dif), get_light(LIGHT_RIGHT, right_dif), dtime, steering);
 
-        OnFwd(LEFT_MOTOR, base_speed - norm());
-        OnFwd(RIGHT_MOTOR, base_speed + (data.output / 1));
-
-        print_debug(data.output, integral, prev_error, dt);
-        Wait(SEC_1);
+        // react on steering data
+        OnFwd(MOTOR_LEFT, clip(base_speed - steering.output, 0, 30));
+        OnFwd(LIGHT_RIGHT, clip(base_speed + steering.output, 0, 30));
+        
+        print_debug(steering, dtime);
+        Wait(10);
     }
 }

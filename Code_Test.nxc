@@ -7,10 +7,10 @@
 #define MOTOR_MID OUT_B
 #define MOTOR_BOTH OUT_AC
 
-// constants for PID controller
-#define KP 10
+// PID Controller constants
+#define KP 0.01
 #define KI 0.01
-#define KD 10
+#define KD 0.01
 
 struct PID {
     int last_err;
@@ -47,7 +47,7 @@ int mid_dif = 0;
 int right_dif = 0;
 
 void calibrate() {
-    long end = CurrentTick() + 1000;
+    long end = CurrentTick() + 100;
     while (CurrentTick() < end) {
         left_dif = Sensor(LIGHT_LEFT);
         mid_dif = Sensor(LIGHT_MID);
@@ -56,24 +56,24 @@ void calibrate() {
     }
 }
 
-void print_debug(PID data, float dt) {
+void fmt_out(int line, string str, float num) {
+    TextOut(0, line, str);
+    NumOut((StrLen(str) - 1) * 8, line, num);
+}
+
+void print_debug(PID data) {
     ClearScreen();
 
-    TextOut(0, LCD_LINE5, fmt("output: ", data.output));
-    //TextOut(0, LCD_LINE6, FormatNum("err: %d", data.last_err));
-    //TextOut(0, LCD_LINE7, FormatNum("integral: %f", data.integral));
-    Flatten(5); 
+    // PID debug
+    fmt_out(LCD_LINE1, "Output:", data.output);
+    fmt_out(LCD_LINE2, "Error:", data.last_err);
+    fmt_out(LCD_LINE3, "Integral:", data.integral);
 
-    TextOut(0, LCD_LINE1, "Left:");
-    NumOut(60, LCD_LINE1, get_light(LIGHT_LEFT, left_dif));
-    TextOut(0, LCD_LINE2, "Middle:");
-    NumOut(60, LCD_LINE2, get_light(LIGHT_MID, mid_dif));
-    TextOut(0, LCD_LINE3, "Right:");
-    NumOut(60, LCD_LINE3, get_light(LIGHT_RIGHT, right_dif));
-    /*
-    TextOut(0, LCD_LINE4, "Distance:");
-    NumOut(60, LCD_LINE4, SensorUS(IN_2));
-    */
+    // Sensors debug
+    fmt_out(LCD_LINE5, "Left:", get_light(LIGHT_LEFT, left_dif));
+    fmt_out(LCD_LINE6, "Middle:", get_light(LIGHT_MID, mid_dif));
+    fmt_out(LCD_LINE7, "Right:", get_light(LIGHT_RIGHT, right_dif));
+    // fmt_out(0, LCD_LINE4, "Distance:", SensorUS(IN_2));
 }
 
 int clip(int val, int min, int max) {
@@ -82,6 +82,14 @@ int clip(int val, int min, int max) {
     if (val > max)
         return max;
     return val;
+}
+
+void turn() {
+    long end_time = CurrentTick() + 1600;
+    while (end_time - CurrentTick() > 0) {
+        OnFwd(MOTOR_LEFT, 40);
+        OnFwd(MOTOR_RIGHT, -40);
+    }
 }
 
 task main() {
@@ -105,13 +113,19 @@ task main() {
         int dtime = current_time - last_time;
         last_time = current_time; 
 
-        steering = pid_ctrl(get_light(LIGHT_LEFT, left_dif), get_light(LIGHT_RIGHT, right_dif), dtime, steering);
+        int left = get_light(LIGHT_LEFT, left_dif);
+        int right =  get_light(LIGHT_RIGHT, right_dif);
+        steering = pid_ctrl(left, right, dtime, steering);
 
         // react on steering data
-        OnFwd(MOTOR_LEFT, clip(base_speed - steering.output, 0, 30));
-        OnFwd(LIGHT_RIGHT, clip(base_speed + steering.output, 0, 30));
-        
-        print_debug(steering, dtime);
-        Wait(10);
+        if (steering.output < 100 && steering.output > -100) {
+            OnFwd(MOTOR_BOTH, base_speed);
+        } else {
+            OnFwd(MOTOR_LEFT, clip(base_speed - steering.output, 10, 80));
+            OnFwd(LIGHT_RIGHT, clip(base_speed + steering.output, 10, 80));
+        }
+
+        print_debug(steering);
+        Wait(100);
     }
 }
